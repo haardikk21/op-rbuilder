@@ -18,10 +18,9 @@ use crate::{
         enabled: true,
         flashblocks_port: 1239,
         flashblocks_addr: "127.0.0.1".into(),
-        flashblocks_block_time: 200,
-        flashblocks_leeway_time: 0,
-        flashblocks_dynamic: false,
+        flashblocks_per_block: 10,
         calculate_state_root: true,
+        flashblocks_block_overhead: 100,
     },
     ..Default::default()
 })]

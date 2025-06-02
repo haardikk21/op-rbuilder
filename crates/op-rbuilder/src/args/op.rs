@@ -110,33 +110,21 @@ pub struct FlashblocksArgs {
     )]
     pub flashblocks_addr: String,
 
-    /// flashblock block time in milliseconds
+    /// Number of Flashblocks per block
     #[arg(
-        long = "flashblocks.block-time",
-        default_value = "250",
-        env = "FLASHBLOCK_BLOCK_TIME"
+        long = "flashblocks.per-block",
+        default_value = "10",
+        env = "FLASHBLOCKS_PER_BLOCK"
     )]
-    pub flashblocks_block_time: u64,
+    pub flashblocks_per_block: u64,
 
-    /// Enabled dynamic flashblocks adjustment. This will allow account for late FCUs and produce
-    /// less flashblocks, while each flashblock would be bigger.
+    /// Overhead for reset of block production (e.g. new payload request to sequencer EL)
     #[arg(
-        long = "flashblocks.dynamic",
-        default_value = "false",
-        env = "FLASHBLOCK_DYNAMIC"
+        long = "flashblocks.block-overhead",
+        default_value = "100",
+        env = "FLASHBLOCK_BLOCK_OVERHEAD"
     )]
-    pub flashblocks_dynamic: bool,
-
-    /// Time by which blocks would be completed earlier in milliseconds.
-    ///
-    /// This time used to account for latencies, this time would be deducted from total block
-    /// building time before calculating number of fbs.
-    #[arg(
-        long = "flashblocks.leeway-time",
-        default_value = "50",
-        env = "FLASHBLOCK_LEEWAY_TIME"
-    )]
-    pub flashblocks_leeway_time: u64,
+    pub flashblocks_block_overhead: u64,
 
     /// Should we calculate state root for each flashblock
     #[arg(

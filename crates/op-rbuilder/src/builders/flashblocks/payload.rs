@@ -2,7 +2,6 @@ use super::{config::FlashblocksConfig, wspub::WebSocketPublisher};
 use crate::{
     builders::{
         context::{estimate_gas_for_builder_tx, OpPayloadBuilderCtx},
-        flashblocks::config::FlashBlocksConfigExt,
         generator::{BlockCell, BuildArguments},
         BuilderConfig, BuilderTx,
     },
@@ -40,11 +39,7 @@ use rollup_boost::{
     ExecutionPayloadBaseV1, ExecutionPayloadFlashblockDeltaV1, FlashblocksPayloadV1,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    ops::{Div, Rem},
-    sync::Arc,
-    time::Instant,
-};
+use std::{sync::Arc, time::Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, metadata::Level, span, warn};
 
@@ -164,34 +159,6 @@ where
 
         let chain_spec = self.client.chain_spec();
         let timestamp = config.attributes.timestamp();
-        // We use this system time to determine remining time to build a block
-        // Things to consider:
-        // FCU(a) - FCU with attributes
-        // FCU(a) could arrive with `block_time - fb_time < delay`. In this case we could only produce 1 flashblock
-        // FCU(a) could arrive with `delay < fb_time` - in this case we will shrink first flashblock
-        // FCU(a) could arrive with `fb_time < delay < block_time - fb_time` - in this case we will issue less flashblocks
-        let time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
-            - self.config.specific.leeway_time;
-        let time_drift = time.duration_since(std::time::SystemTime::now()).ok();
-        match time_drift {
-            None => error!(
-                target: "payload_builder",
-                message = "FCU arrived too late or system clock are unsynced",
-                ?time,
-            ),
-            Some(time_drift) => {
-                self.metrics
-                    .flashblock_time_drift
-                    .record(time_drift.as_millis() as f64);
-                debug!(
-                    target: "payload_builder",
-                    message = "Time drift for building round",
-                    ?time,
-                    ?time_drift,
-                    ?timestamp
-                );
-            }
-        }
         let block_env_attributes = OpNextBlockEnvAttributes {
             timestamp,
             suggested_fee_recipient: config.attributes.suggested_fee_recipient(),
@@ -290,28 +257,12 @@ where
             // return early since we don't need to build a block with transactions from the pool
             return Ok(());
         }
-        // We adjust our flashblocks timings based on time_drift if dynamic adjustment enable
-        let (flashblocks_per_block, first_flashblock_offset) =
-            self.calculate_flashblocks(time_drift);
-        info!(
-            target: "payload_builder",
-            message = "Performed flashblocks timing derivation",
-            flashblocks_per_block,
-            first_flashblock_offset = first_flashblock_offset.as_millis(),
-            flashblocks_interval = self.config.specific.interval.as_millis(),
-        );
-        ctx.metrics
-            .target_flashblock
-            .record(flashblocks_per_block as f64);
-        ctx.metrics
-            .first_flashblock_time_offset
-            .record(first_flashblock_offset.as_millis() as f64);
-        let gas_per_batch = ctx.block_gas_limit() / flashblocks_per_block;
+        let gas_per_batch = ctx.block_gas_limit() / self.config.specific.flashblocks_per_block;
         let mut total_gas_per_batch = gas_per_batch;
         let da_per_batch = ctx
             .da_config
             .max_da_block_size()
-            .map(|da_limit| da_limit / flashblocks_per_block);
+            .map(|da_limit| da_limit / self.config.specific.flashblocks_per_block);
         // Check that builder tx won't affect fb limit too much
         if let Some(da_limit) = da_per_batch {
             // We error if we can't insert any tx aside from builder tx in flashblock
@@ -322,56 +273,37 @@ where
         let mut total_da_per_batch = da_per_batch;
 
         // TODO: we should account for a case when we will issue only 1 flashblock
-        let last_flashblock = flashblocks_per_block.saturating_sub(1);
-
+        let last_flashblock = self.config.specific.flashblocks_per_block.saturating_sub(1);
         let mut flashblock_count = 0;
         // Create a channel to coordinate flashblock building
         let (build_tx, mut build_rx) = mpsc::channel(1);
 
         // Spawn the timer task that signals when to build a new flashblock
         let cancel_clone = ctx.cancel.clone();
-        let interval = self.config.specific.interval;
+        let interval = self.config.specific.build_interval;
         tokio::spawn(async move {
-            // We handle first flashblock separately, because it could be shrunk to fit everything
-            let mut first_interval = tokio::time::interval(first_flashblock_offset);
-            // If first_flashblock_offset == 0 that means all flashblock are proper, and we just
-            // skip this cusom logic
-            if first_flashblock_offset.as_millis() != 0 {
-                let cancelled = cancel_clone
-                    .run_until_cancelled(async {
-                        // We send first signal straight away and then wait first_interval duration
-                        // to send second signal and start building normal blocks
-                        for _ in 0..2 {
-                            first_interval.tick().await;
-                            // TODO: maybe return None if cancelled
-                            if let Err(err) = build_tx.send(()).await {
-                                error!(target: "payload_builder", "Error sending build signal: {}", err);
-                            }
-                        }
-                    })
-                    .await;
-                if cancelled.is_none() {
-                    info!(target: "payload_builder", "Building job cancelled, stopping payload building");
-                    drop(build_tx);
-                    return;
-                }
-            }
-            // Handle rest of fbs in steady rate
             let mut interval = tokio::time::interval(interval);
-            let cancelled = cancel_clone.run_until_cancelled(async {
-                // First tick completes immediately
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
+            loop {
+                tokio::select! {
+                // Add a cancellation check that only runs every 10ms to avoid tight polling
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    if cancel_clone.is_cancelled() {
+                            tracing::info!(target: "payload_builder", "Job cancelled during sleep, stopping payload building");
+                            drop(build_tx);
+                            break;
+                        }
+                    }
+                _ = interval.tick() => {
                     if let Err(err) = build_tx.send(()).await {
+                        if build_tx.is_closed() || cancel_clone.is_cancelled() {
+                            debug!(target: "payload_builder", "Building is stopped");
+                            break;
+                        }
+
                         error!(target: "payload_builder", "Error sending build signal: {}", err);
                         break;
                     }
-                }
-            }).await;
-            if cancelled.is_none() {
-                info!(target: "payload_builder", "Building job cancelled, stopping payload building");
-                drop(build_tx);
+                }}
             }
         });
 
@@ -403,6 +335,19 @@ where
                         return None;
                     }
 
+                    // If we've built all the flashblocks, no more work to do
+                    if flashblock_count >= self.config.specific.flashblocks_per_block {
+                        tracing::info!(
+                            target: "payload_builder",
+                            target = self.config.specific.flashblocks_per_block,
+                            flashblock_count = flashblock_count,
+                            block_number = ctx.block_number(),
+                            "Built all flashblocks, stopping payload builder",
+                        );
+
+                        return None;
+                    }
+
                     // Wait for next message
                     build_rx.recv().await
                 })
@@ -411,17 +356,6 @@ where
             // Exit loop if channel closed or cancelled
             match received {
                 Some(()) => {
-                    if flashblock_count >= flashblocks_per_block {
-                        info!(
-                            target: "payload_builder",
-                            target = flashblocks_per_block,
-                            flashblock_count = flashblock_count,
-                            block_number = ctx.block_number(),
-                            "Skipping flashblock reached target",
-                        );
-                        continue;
-                    }
-
                     // Continue with flashblock building
                     info!(
                         target: "payload_builder",
@@ -433,6 +367,7 @@ where
                         da_used = info.cumulative_da_bytes_used,
                         "Building flashblock",
                     );
+
                     let flashblock_build_start_time = Instant::now();
                     let state = StateProviderDatabase::new(&state_provider);
                     invoke_on_first_flashblock(flashblock_count, || {
@@ -478,7 +413,7 @@ where
                         // Handles job cancellation
                         info!(
                             target: "payload_builder",
-                            "Job cancelled, stopping payload building",
+                            "Job cancelled, stopping payload building block_number={}", ctx.block_number()
                         );
                         ctx.metrics
                             .payload_tx_simulation_duration
@@ -557,52 +492,21 @@ where
                                 ?flashblock_count,
                                 current_gas = info.cumulative_gas_used,
                                 current_da = info.cumulative_da_bytes_used,
-                                target_flashblocks = flashblocks_per_block,
                             );
                         }
                     }
                 }
                 None => {
-                    // Exit loop if channel closed or cancelled
-                    ctx.metrics.block_built_success.increment(1);
-                    ctx.metrics.flashblock_count.record(flashblock_count as f64);
-                    debug!(
-                        target: "payload_builder",
-                        message = "Payload building complete, channel closed or job cancelled"
-                    );
+                    self.metrics.block_built_success.increment(1);
+                    self.metrics
+                        .flashblock_count
+                        .record(flashblock_count as f64);
+                    tracing::info!(target: "payload_builder", "Completed block building block={} flashblock_count={}", ctx.block_number(), flashblock_count);
                     span.record("flashblock_count", flashblock_count);
                     return Ok(());
                 }
             }
         }
-    }
-
-    /// Calculate number of flashblocks.
-    /// If dynamic is enabled this function will take time drift into the account.
-    pub fn calculate_flashblocks(&self, time_drift: Option<Duration>) -> (u64, Duration) {
-        if !self.config.specific.dynamic_adjustment || time_drift.is_none() {
-            return (
-                self.config.flashblocks_per_block(),
-                self.config.specific.interval,
-            );
-        }
-        let time_drift = time_drift.unwrap();
-        let interval = self.config.specific.interval.as_millis();
-        let time_drift = time_drift.as_millis();
-        let first_flashblock_offset = time_drift.rem(interval);
-        let flashblocks_per_block = if first_flashblock_offset == 0 {
-            // In this case all flashblock are full and they all in division
-            time_drift.div(interval)
-        } else {
-            // If we have any reminder that mean the first flashblock won't be in division
-            // so we add it manually.
-            time_drift.div(interval) + 1
-        };
-        // We won't have any problems because of casting
-        (
-            flashblocks_per_block as u64,
-            Duration::from_millis(first_flashblock_offset as u64),
-        )
     }
 }
 
