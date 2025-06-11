@@ -216,7 +216,7 @@ where
             .sequencer_tx_duration
             .record(sequencer_tx_start_time.elapsed());
 
-        let (payload, fb_payload, mut bundle_state) = build_block(db, &ctx, &mut info)?;
+        let (payload, fb_payload, mut bundle_state) = build_block(&mut db, &ctx, &mut info)?;
 
         best_payload.set(payload.clone());
         self.ws_pub
@@ -273,20 +273,20 @@ where
             let mut interval = tokio::time::interval(interval);
             loop {
                 tokio::select! {
-                // Add a cancellation check that only runs every 10ms to avoid tight polling
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                    if cancel_clone.is_cancelled() {
-                            tracing::info!(target: "payload_builder", "Job cancelled during sleep, stopping payload building");
-                            drop(build_tx);
-                            break;
-                        }
-                    }
-                _ = interval.tick() => {
-                            if let Err(err) = build_tx.send(()).await {
-                                error!(target: "payload_builder", "Error sending build signal: {}", err);
+                    // Add a cancellation check that only runs every 10ms to avoid tight polling
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if cancel_clone.is_cancelled() {
+                                tracing::info!(target: "payload_builder", "Job cancelled during sleep, stopping payload building");
+                                drop(build_tx);
                                 break;
                             }
                         }
+                    _ = interval.tick() => {
+                        if let Err(err) = build_tx.send(()).await {
+                            error!(target: "payload_builder", "Error sending build signal: {}", err);
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -350,7 +350,7 @@ where
                         "Building flashblock",
                     );
                     let flashblock_build_start_time = Instant::now();
-                    let state = StateProviderDatabase::new(&state_provider);
+                    // let state = StateProviderDatabase::new(&state_provider);
                     invoke_on_first_flashblock(flashblock_count, || {
                         total_gas_per_batch -= builder_tx_gas;
                         // saturating sub just in case, we will log an error if da_limit too small for builder_tx_da_size
@@ -365,11 +365,11 @@ where
                             *da_limit = da_limit.saturating_sub(builder_tx_da_size);
                         }
                     });
-                    let mut db = State::builder()
-                        .with_database(state)
-                        .with_bundle_update()
-                        .with_bundle_prestate(bundle_state)
-                        .build();
+                    // let mut db = State::builder()
+                    //     .with_database(state)
+                    //     .with_bundle_update()
+                    //     .with_bundle_prestate(bundle_state)
+                    //     .build();
 
                     let best_txs_start_time = Instant::now();
                     let best_txs = BestPayloadTransactions::new(
@@ -412,7 +412,7 @@ where
                     });
 
                     let total_block_built_duration = Instant::now();
-                    let build_result = build_block(db, &ctx, &mut info);
+                    let build_result = build_block(&mut db, &ctx, &mut info);
                     ctx.metrics
                         .total_block_built_duration
                         .record(total_block_built_duration.elapsed());
@@ -463,6 +463,8 @@ where
                                 ?flashblock_count,
                                 current_gas = info.cumulative_gas_used,
                                 current_da = info.cumulative_da_bytes_used,
+                                state_root = fb_payload.diff.state_root.to_string(),
+                                block_hash = new_payload.block().hash().to_string()
                             );
                         }
                     }
@@ -529,7 +531,7 @@ where
 }
 
 fn build_block<DB, P>(
-    mut state: State<DB>,
+    state: &mut State<DB>,
     ctx: &OpPayloadBuilderCtx,
     info: &mut ExecutionInfo<ExtraExecutionInfo>,
 ) -> Result<(OpBuiltPayload, FlashblocksPayloadV1, BundleState), PayloadBuilderError>
@@ -547,6 +549,14 @@ where
         .record(state_merge_start_time.elapsed());
 
     let new_bundle = state.take_bundle();
+    // info!(
+    //     "new bundle has {} state entries, {} contract entries, state size {} and revert size {}",
+    //     new_bundle.state.len(),
+    //     new_bundle.contracts.len(),
+    //     new_bundle.state_size,
+    //     new_bundle.reverts_size
+    // );
+    // info!("info has {} receipts", info.receipts.len());
 
     let block_number = ctx.block_number();
     assert_eq!(block_number, ctx.parent().number + 1);
@@ -558,6 +568,7 @@ where
         vec![],
     );
 
+    // let receipts_root_start_time = Instant::now();
     let receipts_root = execution_outcome
         .generic_receipts_root_slow(block_number, |receipts| {
             calculate_receipt_root_no_memo_optimism(
@@ -567,14 +578,22 @@ where
             )
         })
         .expect("Number is in range");
+    // info!(
+    //     "time taken to calculate receipts root: {:?}",
+    //     receipts_root_start_time.elapsed()
+    // );
     let logs_bloom = execution_outcome
         .block_logs_bloom(block_number)
         .expect("Number is in range");
-
     // // calculate the state root
     let state_root_start_time = Instant::now();
     let state_provider = state.database.as_ref();
     let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
+    // info!(
+    //     "hashed state has {} account entries and {} storages entries",
+    //     hashed_state.accounts.len(),
+    //     hashed_state.storages.len()
+    // );
     let (state_root, _trie_output) = {
         state
             .database
@@ -588,6 +607,10 @@ where
                 );
             })?
     };
+    // info!(
+    //     "time taken to calculate state root and get trie outputs: {:?}",
+    //     state_root_start_time.elapsed()
+    // );
     ctx.metrics
         .state_root_calculation_duration
         .record(state_root_start_time.elapsed());
