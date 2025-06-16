@@ -43,7 +43,7 @@ use rollup_boost::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tracing::{debug, error, metadata::Level, span, warn};
+use tracing::{debug, error, metadata::Level, span};
 
 #[derive(Debug, Default)]
 struct ExtraExecutionInfo {
@@ -573,21 +573,22 @@ where
 
     // // calculate the state root
     let state_root_start_time = Instant::now();
-    let state_provider = state.database.as_ref();
-    let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
-    let (state_root, _trie_output) = {
-        state
-            .database
-            .as_ref()
-            .state_root_with_updates(hashed_state.clone())
-            .inspect_err(|err| {
-                warn!(target: "payload_builder",
-                parent_header=%ctx.parent().hash(),
-                    %err,
-                    "failed to calculate state root for payload"
-                );
-            })?
-    };
+    // let state_provider = state.database.as_ref();
+    // let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
+    // let (state_root, _trie_output) = {
+    //     state
+    //         .database
+    //         .as_ref()
+    //         .state_root_with_updates(hashed_state.clone())
+    //         .inspect_err(|err| {
+    //             warn!(target: "payload_builder",
+    //             parent_header=%ctx.parent().hash(),
+    //                 %err,
+    //                 "failed to calculate state root for payload"
+    //             );
+    //         })?
+    // };
+    let state_root = B256::ZERO;
     ctx.metrics
         .state_root_calculation_duration
         .record(state_root_start_time.elapsed());
