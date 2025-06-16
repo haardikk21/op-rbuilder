@@ -22,6 +22,7 @@ async fn chain_produces_blocks() -> eyre::Result<()> {
             flashblocks_addr: "127.0.0.1".into(),
             flashblocks_per_block: 10,
             flashblocks_block_overhead: 100,
+            calculate_state_root: true,
         },
         ..Default::default()
     })
