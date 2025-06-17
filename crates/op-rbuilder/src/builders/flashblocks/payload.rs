@@ -506,7 +506,7 @@ where
                         &ctx,
                         &mut info,
                         self.config.specific.calculate_state_root,
-                    )?;
+                    );
                     ctx.metrics
                         .total_block_built_duration
                         .record(total_block_built_duration.elapsed());
