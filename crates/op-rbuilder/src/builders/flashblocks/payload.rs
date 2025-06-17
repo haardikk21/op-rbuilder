@@ -255,7 +255,12 @@ where
             .sequencer_tx_duration
             .record(sequencer_tx_start_time.elapsed());
 
-        let (payload, fb_payload, mut bundle_state) = build_block(db, &ctx, &mut info)?;
+        let (payload, fb_payload, mut bundle_state) = build_block(
+            db,
+            &ctx,
+            &mut info,
+            self.config.specific.calculate_state_root,
+        )?;
 
         best_payload.set(payload.clone());
         self.ws_pub
@@ -496,7 +501,12 @@ where
                     });
 
                     let total_block_built_duration = Instant::now();
-                    let build_result = build_block(db, &ctx, &mut info);
+                    let build_result = build_block(
+                        db,
+                        &ctx,
+                        &mut info,
+                        self.config.specific.calculate_state_root,
+                    )?;
                     ctx.metrics
                         .total_block_built_duration
                         .record(total_block_built_duration.elapsed());
@@ -645,6 +655,7 @@ fn build_block<DB, P>(
     mut state: State<DB>,
     ctx: &OpPayloadBuilderCtx,
     info: &mut ExecutionInfo<ExtraExecutionInfo>,
+    calculate_state_root: bool,
 ) -> Result<(OpBuiltPayload, FlashblocksPayloadV1, BundleState), PayloadBuilderError>
 where
     DB: Database<Error = ProviderError> + AsRef<P>,
@@ -684,26 +695,34 @@ where
         .block_logs_bloom(block_number)
         .expect("Number is in range");
 
-    // // calculate the state root
-    let state_root_start_time = Instant::now();
-    let state_provider = state.database.as_ref();
-    let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
-    let (state_root, _trie_output) = {
-        state
-            .database
-            .as_ref()
-            .state_root_with_updates(hashed_state.clone())
-            .inspect_err(|err| {
-                warn!(target: "payload_builder",
-                parent_header=%ctx.parent().hash(),
-                    %err,
-                    "failed to calculate state root for payload"
-                );
-            })?
-    };
-    ctx.metrics
-        .state_root_calculation_duration
-        .record(state_root_start_time.elapsed());
+    // calculate the state root
+    let mut state_root = B256::ZERO;
+
+    if calculate_state_root {
+        let state_root_start_time = Instant::now();
+
+        let state_provider = state.database.as_ref();
+        let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
+        let (_state_root, _trie_output) = {
+            state
+                .database
+                .as_ref()
+                .state_root_with_updates(hashed_state.clone())
+                .inspect_err(|err| {
+                    warn!(
+                        target: "payload_builder",
+                        parent_header=%ctx.parent().hash(),
+                        %err,
+                        "failed to calculate state root for payload"
+                    );
+                })?
+        };
+        state_root = _state_root;
+
+        ctx.metrics
+            .state_root_calculation_duration
+            .record(state_root_start_time.elapsed());
+    }
 
     let mut requests_hash = None;
     let withdrawals_root = if ctx
