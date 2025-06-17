@@ -34,7 +34,7 @@ impl Default for FlashblocksConfig {
             interval: Duration::from_millis(250),
             leeway_time: Duration::from_millis(50),
             dynamic_adjustment: false,
-            calculate_state_root: false,
+            calculate_state_root: true,
         }
     }
 }
