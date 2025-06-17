@@ -141,7 +141,7 @@ pub struct FlashblocksArgs {
     /// Should we calculate state root for each flashblock
     #[arg(
         long = "flashblocks.calculate-state-root",
-        default_value = "false",
+        default_value = "true",
         env = "FLASHBLOCKS_CALCULATE_STATE_ROOT"
     )]
     pub calculate_state_root: bool,
