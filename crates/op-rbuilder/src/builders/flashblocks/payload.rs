@@ -698,9 +698,8 @@ where
     // calculate the state root
     let mut state_root = B256::ZERO;
 
+    let state_root_start_time = Instant::now();
     if calculate_state_root {
-        let state_root_start_time = Instant::now();
-
         let state_provider = state.database.as_ref();
         let hashed_state = state_provider.hashed_post_state(execution_outcome.state());
         let (_state_root, _trie_output) = {
@@ -718,11 +717,10 @@ where
                 })?
         };
         state_root = _state_root;
-
-        ctx.metrics
-            .state_root_calculation_duration
-            .record(state_root_start_time.elapsed());
     }
+    ctx.metrics
+        .state_root_calculation_duration
+        .record(state_root_start_time.elapsed());
 
     let mut requests_hash = None;
     let withdrawals_root = if ctx
