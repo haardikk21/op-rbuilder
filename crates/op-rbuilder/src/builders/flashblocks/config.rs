@@ -23,7 +23,7 @@ pub struct FlashblocksConfig {
     /// Enables dynamic flashblocks number based on FCU arrival time
     pub dynamic_adjustment: bool,
 
-    /// Should we calculate state root for each flashblockAdd commentMore actions
+    /// Should we calculate state root for each flashblock
     pub calculate_state_root: bool,
 }
 
