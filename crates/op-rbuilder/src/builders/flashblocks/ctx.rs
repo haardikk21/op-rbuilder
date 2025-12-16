@@ -17,7 +17,7 @@ use reth_optimism_primitives::OpTransactionSigned;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct OpPayloadSyncerCtx {
     /// The type that knows how to perform system calls and configure the evm.
     evm_config: OpEvmConfig,
@@ -29,6 +29,8 @@ pub(super) struct OpPayloadSyncerCtx {
     max_gas_per_txn: Option<u64>,
     /// The metrics for the builder
     metrics: Arc<OpRBuilderMetrics>,
+    /// Enshrined DEX handler
+    dex_handler: Arc<crate::dex::DexHandler>,
 }
 
 impl OpPayloadSyncerCtx {
@@ -37,6 +39,7 @@ impl OpPayloadSyncerCtx {
         builder_config: BuilderConfig<FlashblocksConfig>,
         evm_config: OpEvmConfig,
         metrics: Arc<OpRBuilderMetrics>,
+        dex_handler: Arc<crate::dex::DexHandler>,
     ) -> eyre::Result<Self>
     where
         Client: ClientBounds,
@@ -48,6 +51,7 @@ impl OpPayloadSyncerCtx {
             chain_spec,
             max_gas_per_txn: builder_config.max_gas_per_txn,
             metrics,
+            dex_handler,
         })
     }
 
@@ -57,6 +61,10 @@ impl OpPayloadSyncerCtx {
 
     pub(super) fn max_gas_per_txn(&self) -> Option<u64> {
         self.max_gas_per_txn
+    }
+
+    pub(super) fn dex_handler(&self) -> &Arc<crate::dex::DexHandler> {
+        &self.dex_handler
     }
 
     pub(super) fn into_op_payload_builder_ctx(
@@ -80,6 +88,7 @@ impl OpPayloadSyncerCtx {
             extra_ctx: (),
             max_gas_per_txn: self.max_gas_per_txn,
             address_gas_limiter: AddressGasLimiter::new(GasLimiterArgs::default()),
+            dex_handler: Some(self.dex_handler),
         }
     }
 }

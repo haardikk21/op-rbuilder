@@ -177,6 +177,8 @@ pub(super) struct OpPayloadBuilder<Pool, Client, BuilderTx> {
     pub builder_tx: BuilderTx,
     /// Rate limiting based on gas. This is an optional feature.
     pub address_gas_limiter: AddressGasLimiter,
+    /// Enshrined DEX handler
+    pub dex_handler: Arc<crate::dex::DexHandler>,
 }
 
 impl<Pool, Client, BuilderTx> OpPayloadBuilder<Pool, Client, BuilderTx> {
@@ -193,6 +195,10 @@ impl<Pool, Client, BuilderTx> OpPayloadBuilder<Pool, Client, BuilderTx> {
         metrics: Arc<OpRBuilderMetrics>,
     ) -> Self {
         let address_gas_limiter = AddressGasLimiter::new(config.gas_limiter_config.clone());
+
+        // Initialize DEX handler
+        let dex_handler = Arc::new(crate::dex::DexHandler::new());
+
         Self {
             evm_config,
             pool,
@@ -203,6 +209,7 @@ impl<Pool, Client, BuilderTx> OpPayloadBuilder<Pool, Client, BuilderTx> {
             metrics,
             builder_tx,
             address_gas_limiter,
+            dex_handler,
         }
     }
 }
@@ -301,6 +308,7 @@ where
             extra_ctx,
             max_gas_per_txn: self.config.max_gas_per_txn,
             address_gas_limiter: self.address_gas_limiter.clone(),
+            dex_handler: Some(self.dex_handler.clone()),
         })
     }
 

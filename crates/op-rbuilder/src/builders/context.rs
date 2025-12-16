@@ -37,7 +37,7 @@ use reth_transaction_pool::{BestTransactionsAttributes, PoolTransaction};
 use revm::{DatabaseCommit, context::result::ResultAndState, interpreter::as_u64_saturated};
 use std::{sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     gas_limiter::AddressGasLimiter,
@@ -77,6 +77,8 @@ pub struct OpPayloadBuilderCtx<ExtraCtx: Debug + Default = ()> {
     pub max_gas_per_txn: Option<u64>,
     /// Rate limiting based on gas. This is an optional feature.
     pub address_gas_limiter: AddressGasLimiter,
+    /// Enshrined DEX handler (only for flashblocks builder)
+    pub dex_handler: Option<Arc<crate::dex::DexHandler>>,
 }
 
 impl<ExtraCtx: Debug + Default> OpPayloadBuilderCtx<ExtraCtx> {
@@ -494,6 +496,44 @@ impl<ExtraCtx: Debug + Default> OpPayloadBuilderCtx<ExtraCtx> {
             }
 
             let tx_simulation_start_time = Instant::now();
+
+            // Check if this is a DEX transaction - if so, handle it specially
+            if let Some(dex_handler) = &self.dex_handler {
+                use alloy_consensus::Transaction as _;
+                if let Some(to) = tx.to() {
+                    if to == crate::dex::DEX_PREDEPLOY_ADDRESS {
+                        // This is a DEX transaction - intercept and handle it
+                        let sender = tx.signer();
+                        match super::flashblocks::dex_integration::execute_dex_transaction(
+                            dex_handler,
+                            &tx,
+                            sender,
+                            info,
+                        ) {
+                            Ok(()) => {
+                                // DEX transaction executed successfully
+                                // Continue to next transaction
+                                self.metrics
+                                    .tx_simulation_duration
+                                    .record(tx_simulation_start_time.elapsed());
+                                self.metrics.tx_byte_size.record(tx.inner().size() as f64);
+                                continue;
+                            }
+                            Err(e) => {
+                                // DEX transaction failed - it's already been recorded in info
+                                // Continue to next transaction
+                                warn!(target: "payload_builder", error = ?e, "DEX transaction failed");
+                                self.metrics
+                                    .tx_simulation_duration
+                                    .record(tx_simulation_start_time.elapsed());
+                                self.metrics.tx_byte_size.record(tx.inner().size() as f64);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             let ResultAndState { result, state } = match evm.transact(&tx) {
                 Ok(res) => res,
                 Err(err) => {

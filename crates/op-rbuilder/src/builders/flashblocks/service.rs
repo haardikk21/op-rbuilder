@@ -122,6 +122,10 @@ impl FlashblocksServiceBuilder {
             ws_pub.clone(),
             metrics.clone(),
         );
+
+        // Clone the DEX handler before moving the payload_builder
+        let dex_handler = payload_builder.dex_handler.clone();
+
         let payload_job_config = BasicPayloadJobGeneratorConfig::default();
 
         let payload_generator = BlockPayloadJobGenerator::with_builder(
@@ -141,6 +145,7 @@ impl FlashblocksServiceBuilder {
             self.0,
             OpEvmConfig::optimism(ctx.chain_spec()),
             metrics.clone(),
+            dex_handler,
         )
         .wrap_err("failed to create flashblocks payload builder context")?;
 

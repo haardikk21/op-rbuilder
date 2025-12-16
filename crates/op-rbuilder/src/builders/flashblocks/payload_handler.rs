@@ -231,6 +231,7 @@ where
         ctx.max_gas_per_txn(),
         is_canyon_active(&chain_spec, timestamp),
         is_regolith_active(&chain_spec, timestamp),
+        Some(ctx.dex_handler().as_ref()),
     )
     .wrap_err("failed to execute best transactions")?;
 
@@ -281,6 +282,34 @@ fn execute_transactions(
     max_gas_per_txn: Option<u64>,
     is_canyon_active: bool,
     is_regolith_active: bool,
+    dex_handler: Option<&crate::dex::DexHandler>,
+) -> eyre::Result<()> {
+    execute_transactions_with_dex(
+        info,
+        state,
+        txs,
+        gas_limit,
+        evm_config,
+        evm_env,
+        max_gas_per_txn,
+        is_canyon_active,
+        is_regolith_active,
+        dex_handler,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_transactions_with_dex(
+    info: &mut ExecutionInfo<FlashblocksExecutionInfo>,
+    state: &mut State<impl alloy_evm::Database>,
+    txs: Vec<op_alloy_consensus::OpTxEnvelope>,
+    gas_limit: u64,
+    evm_config: &reth_optimism_evm::OpEvmConfig,
+    evm_env: alloy_evm::EvmEnv<op_revm::OpSpecId>,
+    max_gas_per_txn: Option<u64>,
+    is_canyon_active: bool,
+    is_regolith_active: bool,
+    dex_handler: Option<&crate::dex::DexHandler>,
 ) -> eyre::Result<()> {
     use alloy_evm::{Evm as _, EvmError as _};
     use op_revm::{OpTransaction, transaction::deposit::DepositTransactionParts};
@@ -297,6 +326,21 @@ fn execute_transactions(
         let sender = tx
             .recover_signer()
             .wrap_err("failed to recover tx signer")?;
+
+        // Check if this is a DEX transaction
+        if let Some(dex_handler) = dex_handler {
+            if super::dex_integration::is_dex_transaction(&tx) {
+                // Execute via DEX handler instead of EVM
+                super::dex_integration::execute_dex_transaction(
+                    dex_handler,
+                    &tx,
+                    sender,
+                    info,
+                )?;
+                continue; // Skip normal EVM execution
+            }
+        }
+
         let tx_env = TxEnv::from_recovered_tx(&tx, sender);
         let executable_tx = match tx {
             OpTxEnvelope::Deposit(ref tx) => {

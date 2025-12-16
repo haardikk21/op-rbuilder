@@ -251,6 +251,7 @@ where
             extra_ctx: Default::default(),
             max_gas_per_txn: self.config.max_gas_per_txn,
             address_gas_limiter: self.address_gas_limiter.clone(),
+            dex_handler: None, // DEX only for flashblocks
         };
 
         let builder = OpBuilder::new(best);
